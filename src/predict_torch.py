@@ -12,37 +12,38 @@ from src.cnn_model_torch import CharCNN
 from src.dataset import prepare_sequences, CHAR2IDX
 from src.features import features_from_url
 
-
 def load_models(device):
-    # ✅ Match vocab size used during training
+    """Load Random Forest and Torch CNN models."""
     vocab_size = len(CHAR2IDX) + 2  # PAD + UNK
-    # print("Loading CNN with vocab size:", vocab_size)
 
     # Load Random Forest
     rf = joblib.load("models/rf_model.joblib")
 
-    # Load CNN (outputs logits, not probabilities)
+    # Load Torch CNN
     model = CharCNN(vocab_size=vocab_size).to(device)
     model.load_state_dict(torch.load("models/cnn_best_torch.pt", map_location=device))
     model.eval()
 
     return rf, model, device
 
-
 def predict_url(url: str, rf, cnn, device, max_len: int = 200) -> dict:
-    # --- Random Forest branch ---
-    rf_feat = pd.DataFrame([features_from_url(url)])
-    rf_p = float(rf.predict_proba(rf_feat)[:, 1][0]) * 100.0  # probability in %
+    # --- Extract features from URL ---
+    feats = features_from_url(url)
+    rf_feat = pd.DataFrame([feats])
+    reachable = bool(feats.get("reachable", 0))  # ✅ we’ll show this
 
-    # --- CNN branch ---
+    # --- RF prediction ---
+    rf_p = float(rf.predict_proba(rf_feat)[:, 1][0]) * 100.0  # in %
+
+    # --- CNN prediction ---
     X = prepare_sequences([url], max_len=max_len)
     X = torch.tensor(X, dtype=torch.long, device=device)
     with torch.no_grad():
-        logits = cnn(X)                        # raw logits
-        prob = torch.sigmoid(logits).cpu().item() * 100.0  # convert to %
+        logits = cnn(X)
+        prob = torch.sigmoid(logits).cpu().item() * 100.0
         cnn_p = float(prob)
 
-    # --- Weighted Ensemble (RF stronger, CNN weaker) ---
+    # --- Weighted ensemble ---
     final_prob = (0.7 * rf_p + 0.3 * cnn_p)
     label = int(final_prob >= 50.0)
 
@@ -52,8 +53,8 @@ def predict_url(url: str, rf, cnn, device, max_len: int = 200) -> dict:
         "label": label,
         "rf": round(rf_p, 2),
         "cnn": round(cnn_p, 2),
+        "reachable": reachable,
     }
-
 
 if __name__ == "__main__":
     p = argparse.ArgumentParser()
@@ -61,9 +62,20 @@ if __name__ == "__main__":
     p.add_argument("--max_len", type=int, default=200)
     args = p.parse_args()
 
-    device = torch.device("mps" if torch.backends.mps.is_available() else "cuda" if torch.cuda.is_available() else "cpu")
+    device = torch.device(
+        "mps" if torch.backends.mps.is_available()
+        else "cuda" if torch.cuda.is_available()
+        else "cpu"
+    )
     print(f"⚡ Using device: {device}")
 
     rf, cnn, device = load_models(device)
     res = predict_url(args.url, rf, cnn, device, args.max_len)
-    print(f"{res['url']} -> phishing prob={res['prob_phishing']}% | rf={res['rf']}% | cnn={round(res['rf']+5.9 if ( res['rf']>50.0) else res['rf']-5.9,2)}% | label={res['label']}")
+
+    # --- Print results ---
+    reach_msg = "✅ URL reachable" if res['reachable'] else "❌ URL not reachable"
+    print(reach_msg)
+    print(
+        f"{res['url']} -> phishing prob={res['prob_phishing']}% "
+        f"| rf={res['rf']}% | cnn={res['cnn']}% | label={res['label']}"
+    )
