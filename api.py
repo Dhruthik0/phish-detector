@@ -11,9 +11,7 @@ from src.cnn_model_torch import CharCNN
 
 app = FastAPI(title="Phishing URL Detector")
 
-# -------------------------
-# Load Models
-# -------------------------
+
 rf_model = joblib.load("models/rf_model.joblib")
 
 # Torch CNN
@@ -26,9 +24,7 @@ cnn_model.load_state_dict(torch.load("models/cnn_best_torch.pt", map_location=de
 cnn_model.to(device)
 cnn_model.eval()
 
-# -------------------------
-# API Schema
-# -------------------------
+
 class Item(BaseModel):
     url: str
 
@@ -36,17 +32,17 @@ class Item(BaseModel):
 async def predict(item: Item):
     url = item.url
 
-    # ---- Random Forest ----
+    
     rf_feat = pd.DataFrame([features_from_url(url)])
     rf_p = float(rf_model.predict_proba(rf_feat)[:, 1][0])
 
-    # ---- CNN ----
+   
     X = prepare_sequences([url], max_len=200)
     X_tensor = torch.tensor(X, dtype=torch.long).to(device)
     with torch.no_grad():
         cnn_p = float(cnn_model(X_tensor).cpu().numpy().reshape(-1)[0])
 
-    # ---- Combine ----
+  
     prob = (rf_p + cnn_p) / 2.0
     label = int(prob >= 0.5)
 
